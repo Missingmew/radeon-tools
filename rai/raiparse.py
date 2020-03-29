@@ -1,4 +1,5 @@
-import sys, cPickle
+#!/usr/bin/python3
+import sys, pickle
 import ply.lex as lex
 import ply.yacc as yacc
 from rai import *
@@ -57,6 +58,8 @@ def t_STRING(t):
     new_str = ""
     for i in range(0, len(str)):
         c = str[i]
+        if c == "\n":
+            t.lexer.lineno += 1
         if escaped:
             if c == "n":
                 c = "\n"
@@ -93,9 +96,30 @@ def t_NEWLINE(t):
 
 def t_SYMBOL(t):
     r'[a-zA-Z_][a-zA-Z_0-9]*'
-    if t.value in reserved:
+    if lexer.symbol_state == "force":
+        lexer.symbol_state = "block"
+    elif t.value in reserved:
         t.type = t.value
     return t
+
+def t_lbrace(t):
+     r'\{'
+     t.type = '{'
+     lexer.symbol_state = "force"
+     return t
+
+def t_rbrace(t):
+     r'\}'
+     t.type = '}'
+     lexer.symbol_state = None
+     return t
+
+def t_semicolon(t):
+     r';'
+     t.type = ';'
+     if lexer.symbol_state == "block":
+        lexer.symbol_state = "force"
+     return t
 
 # Ignored characters
 t_ignore = " \t\r"
@@ -108,6 +132,7 @@ t_mlcomment_error = t_error
 
 # Build the lexer
 lexer = lex.lex()
+lexer.symbol_state = None
 
 
 # Parsing rules
@@ -214,8 +239,10 @@ def p_block_registers_body(p):
     if len(p) == 1:
         p[0] = dict()
     else:
-        assert p[2].name not in p[1]
-        p[1][p[2].name] = p[2]
+        if p[2].name in p[1]:
+            print("Duplicate register '%s', ignoring! (ending at line %d)" % (p[2].name, p.lexer.lineno))
+        else:
+            p[1][p[2].name] = p[2]
         p[0] = p[1]
 
 def p_block_register(p):
@@ -256,7 +283,7 @@ def p_reg_field(p):
     """reg_field : field_name INT ':' INT NUM field_flags ';'
                  | field_name INT ':' INT INDEX '=' SYMBOL field_flags ';'
                  | field_name INT ':' INT DATA '=' SYMBOL field_flags ';'
-                 | field_name INT ':' INT ALPHA '{' alpha_defs '}' field_flags ';'
+                 | field_name INT ':' INT ALPHA '{' alpha_defs_or_none '}' field_flags ';'
     """
     f = Field()
     f.name = p[1]
@@ -267,7 +294,10 @@ def p_reg_field(p):
         f.target = p[7]
         f.flags = p[8]
     elif f.type == 'ALPHA':
-        f.values = p[7]
+        if p[7] is None:
+            f.type = "NUM"
+        else:
+            f.values = p[7]
         f.flags = p[9]
     else:
         f.flags = p[6]
@@ -284,6 +314,16 @@ def p_field_flags(p):
                    | W
                    |"""
     p[0] = p[1] if len(p) > 1 else None
+
+def p_alpha_defs_or_none(p):
+    """alpha_defs_or_none : alpha_defs
+                          | STRING"""
+    if isinstance(p[1], str):
+        p[0] = None
+        if p[1] != "None": # What is this ALPHA { "None" } junk?
+            print("Garbage ALPHA define '%s' (line %d)" % (p[1],p.lexer.lineno))
+    else:
+        p[0] = p[1]
 
 def p_alpha_defs(p):
     """alpha_defs : alpha_defs ',' alpha_def
@@ -323,10 +363,13 @@ def p_fixedbase(p):
     p[0] = p[2]
 
 def p_error(t):
-    print("Syntax error at %s:'%s' (line %d)" % (t.type,t.value,t.lineno))  
+    if t is None:
+        print("Syntax error at EOF")
+    else:
+        print("Syntax error at %s:'%s' (line %d)" % (t.type,t.value,t.lineno))
 
 parser = yacc.yacc(debug=1)
 
 rai = parser.parse(open(sys.argv[1]).read())
-with open(sys.argv[2], "w") as fd:
-    cPickle.dump(rai, fd)
+with open(sys.argv[2], "wb") as fd:
+    pickle.dump(rai, fd)
